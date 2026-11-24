@@ -7,6 +7,11 @@ All notable changes to roborev, grouped by minor release.
 
 ## Unreleased
 
+- The GitHub CI poller can comment on the lines that findings name. Set
+    `[ci] inline_comments = true` to post a pull request review with a line
+    comment for each posted finding inside the diff, next to the usual PR
+    comment. See [Line Comments](/docs/integrations/github/#line-comments).
+
 ## 0.76.0
 
 <small>2026-11-22</small>

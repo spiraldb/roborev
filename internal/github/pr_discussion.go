@@ -181,7 +181,7 @@ func isHumanGitHubUser(user *googlegithub.User) bool {
 }
 
 func isRoborevCommentBody(body string) bool {
-	return strings.Contains(body, CommentMarker)
+	return strings.Contains(body, CommentMarker) || strings.Contains(body, InlineMarker)
 }
 
 func timestampValue(ts *googlegithub.Timestamp) time.Time {

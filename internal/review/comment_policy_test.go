@@ -154,3 +154,38 @@ func TestCommentMinConfidence(t *testing.T) {
 		})
 	}
 }
+
+// Inline findings must be the displayed findings that name lines, in display order.
+func TestInlineFindingsFollowDisplayedFindings(t *testing.T) {
+	doc := StructuredReview{Findings: []StructuredFinding{
+		{Severity: "low", Problem: "low-one", File: "a.go", StartLine: 3, EndLine: 3},
+		{Severity: "high", Problem: "high-range", Fix: "fix it", File: "b.go", StartLine: 10, EndLine: 14},
+		{Severity: "critical", Problem: "whole-file", File: "c.go"},
+		{Severity: "high", Problem: "no-file"},
+		{Severity: "medium", Problem: "single-line", File: "d.go", StartLine: 7},
+		{Severity: "medium", Problem: "capped", File: "e.go", StartLine: 1, EndLine: 2},
+	}}
+	prepared := PrepareComment(CommentConfig{MinSeverity: "medium", MaxFindings: 4}, ReviewResult{Structured: &doc})
+
+	assert.Equal(t, []InlineFinding{
+		{Severity: "high", Problem: "high-range", Fix: "fix it", File: "b.go", StartLine: 10, EndLine: 14},
+		{Severity: "medium", Problem: "single-line", File: "d.go", StartLine: 7, EndLine: 7},
+	}, prepared.InlineFindings())
+}
+
+// Prose and verbatim reviews carry no line data, so they yield no inline findings.
+func TestInlineFindingsEmptyForProse(t *testing.T) {
+	prepared := PrepareComment(CommentConfig{MinSeverity: "high"}, ReviewResult{Output: "### High\nState is lost at a.go:3."})
+	assert.Empty(t, prepared.InlineFindings())
+}
+
+// An end line before the start line is treated as a single-line finding.
+func TestInlineFindingsClampInvertedRange(t *testing.T) {
+	doc := StructuredReview{Findings: []StructuredFinding{
+		{Severity: "high", Problem: "inverted", File: "a.go", StartLine: 9, EndLine: 4},
+	}}
+	got := PrepareComment(CommentConfig{}, ReviewResult{Structured: &doc}).InlineFindings()
+	require.Len(t, got, 1)
+	assert.Equal(t, 9, got[0].StartLine)
+	assert.Equal(t, 9, got[0].EndLine)
+}

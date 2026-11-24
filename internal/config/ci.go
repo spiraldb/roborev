@@ -237,6 +237,12 @@ type CIConfig struct {
 	// Default: false (omit costs from GitHub comments).
 	IncludeCosts bool `toml:"include_costs"`
 
+	// InlineComments also posts the findings shown in a synthesized GitHub
+	// daemon comment as a pull request review, with one comment on each line
+	// a finding names. Findings outside the PR's diff stay in the PR comment
+	// only. Default: false.
+	InlineComments bool `toml:"inline_comments"`
+
 	// BatchTimeout is how long to wait for all batch jobs to complete before
 	// posting results with available reviews. Jobs still running after this
 	// timeout are canceled. Default: "15m". Set to "0" to disable.
@@ -620,6 +626,9 @@ type RepoCIConfig struct {
 	// IncludeCosts overrides the global ci.include_costs setting.
 	// Use a pointer so we can distinguish "not set" from "explicitly false".
 	IncludeCosts *bool `toml:"include_costs" comment:"Override whether CI PR comments include token cost estimates."`
+
+	// InlineComments overrides the global ci.inline_comments setting.
+	InlineComments *bool `toml:"inline_comments" comment:"Override whether synthesized GitHub daemon reviews also comment on the lines their findings name."`
 }
 
 func validateCIReviewTypes(
@@ -829,6 +838,24 @@ func ResolveCIUpsertComments(
 	var globalVal *bool
 	if globalCfg != nil {
 		globalVal = &globalCfg.CI.UpsertComments
+	}
+	return resolveBool(false, repoVal, globalVal)
+}
+
+// ResolveCIInlineComments determines whether synthesized GitHub daemon reviews
+// also comment on the lines their findings name.
+// Priority: repo [ci].inline_comments > global [ci].inline_comments > false.
+func ResolveCIInlineComments(
+	repoCfg *RepoConfig,
+	globalCfg *Config,
+) bool {
+	var repoVal *bool
+	if repoCfg != nil {
+		repoVal = repoCfg.CI.InlineComments
+	}
+	var globalVal *bool
+	if globalCfg != nil {
+		globalVal = &globalCfg.CI.InlineComments
 	}
 	return resolveBool(false, repoVal, globalVal)
 }

@@ -915,6 +915,39 @@ both publish statuses. If status delivery fails, a silent review can have no
 visible signal until the normal status retry succeeds. `roborev doctor` includes
 this permission advice when silence is enabled.
 
+## Line Comments
+
+Set `inline_comments = true` to also comment on the lines that findings name.
+After the daemon posts a synthesized PR comment, it posts one pull request
+review as a `COMMENT` event. The review holds a line comment for each finding
+that the comment shows and that names a line in the pull request's diff:
+
+```toml
+[ci]
+inline_comments = true
+```
+
+- The PR comment stays the full record. Line comments repeat its findings where
+    the code is, so the same severity, confidence, and `comment_max_findings`
+    filters apply.
+- GitHub accepts line comments only on lines in the diff: added lines and the
+    context lines around them. A finding about other code, or one without a
+    line, appears in the PR comment only. A range that crosses diff hunks is
+    shortened to its last line.
+- The review is pinned to the reviewed head commit. After a push, GitHub marks
+    the old line comments outdated, and the next review posts new ones. A
+    retried publication for the same head does not post a second review.
+- Posting line comments is best effort. If GitHub rejects the review, the daemon
+    logs the error; the PR comment, the commit status, and the panel's outcome
+    do not change.
+- roborev does not read its own line comments back as PR discussion.
+- The setting applies to synthesized GitHub daemon comments only. Raw fallback
+    comments, `roborev ci review`, and GitLab are unchanged. It needs **Pull
+    requests: Read and write**, which the setup above already grants.
+
+A repository's `.roborev.toml` can override the global setting with its own
+`[ci] inline_comments`.
+
 ## Comment Upsert
 
 By default, each review run creates a new PR comment. When `upsert_comments` is
@@ -1206,6 +1239,7 @@ set, it takes priority over the matrix fields for that repo.
 | `comment_when_clean` | bool | global `comment_when_clean` | Create synthesized GitHub daemon comments when no findings survive display filters |
 | `upsert_comments` | bool | global `upsert_comments` | Override global comment upsert setting for this repo |
 | `include_costs` | bool | global `include_costs` | Include token cost estimates in PR comment footers for this repo |
+| `inline_comments` | bool | global `inline_comments` | Also comment on the lines that posted findings name; see [Line Comments](#line-comments) |
 | `check` | bool | global `check` | Try synthesized findings before posting and keep those that hold up |
 | `rewrite` | bool | global `rewrite` | Rewrite checked findings in plain words; requires `check` |
 | `review_default_branch` | bool | `true` when on globally | Set `false` to skip default-branch reviews for this repo. It cannot turn them on when the global option is off. |
@@ -1250,6 +1284,7 @@ set, it takes priority over the matrix fields for that repo.
 | `comment_when_clean` | bool | `true` | Create synthesized GitHub daemon comments when no findings survive display filters |
 | `upsert_comments` | bool | `false` | Update existing PR comments instead of creating new ones |
 | `include_costs` | bool | `false` | Include token cost estimates in PR comment footers |
+| `inline_comments` | bool | `false` | Also post a pull request review that comments on the lines posted findings name |
 | `discord_webhook_url` | string | | Discord webhook URL for best-effort CI job failure notifications |
 | `batch_timeout` | string | `"15m"` | Maximum time to wait for panel members before posting available results. Set `"0"` to disable. |
 
