@@ -11,14 +11,6 @@ import (
 	"go.kenn.io/roborev/internal/storage"
 )
 
-type capturedInlineReview struct {
-	repo     string
-	pr       int
-	headSHA  string
-	summary  string
-	findings []reviewpkg.InlineFinding
-}
-
 const inlineTestFindings = `{"schema_version":3,"summary":"Stored review.","verdict":"fail","findings":[` +
 	`{"severity":"low","problem":"Minor naming.","fix":"Rename it.","file":"a.go","start_line":3,"end_line":3},` +
 	`{"severity":"high","problem":"State is lost.","fix":"Persist it.","file":"b.go","start_line":10,"end_line":12},` +
@@ -41,11 +33,10 @@ func seedInlinePanel(t *testing.T, h *ciPollerHarness) (*storage.CIPanel, []stor
 	return panel, members
 }
 
-func captureInlineReviews(h *ciPollerHarness, err error) *[]capturedInlineReview {
-	var got []capturedInlineReview
-	h.Poller.postInlineReviewFn = func(repo string, pr int, headSHA, summary string, findings []reviewpkg.InlineFinding) (int, error) {
-		got = append(got, capturedInlineReview{repo, pr, headSHA, summary, findings})
-		return len(findings), err
+func captureInlineReviews(h *ciPollerHarness) *[]inlineReviewJob {
+	var got []inlineReviewJob
+	h.Poller.enqueueInlineReviewFn = func(job inlineReviewJob) {
+		got = append(got, job)
 	}
 	return &got
 }
@@ -57,7 +48,7 @@ func TestCIPanelPostsInlineReview(t *testing.T) {
 	h.Cfg.CI.InlineComments = true
 	h.Cfg.CI.CommentMaxFindings = 2
 	comments := h.CaptureComments()
-	inline := captureInlineReviews(h, nil)
+	inline := captureInlineReviews(h)
 	panel, members := seedInlinePanel(t, h)
 
 	h.Poller.postPanelComment(panel, members)
@@ -78,7 +69,7 @@ func TestCIPanelPostsInlineReview(t *testing.T) {
 func TestCIPanelSkipsInlineReviewByDefault(t *testing.T) {
 	h := newCIPollerHarness(t, "https://github.com/acme/api.git")
 	comments := h.CaptureComments()
-	inline := captureInlineReviews(h, nil)
+	inline := captureInlineReviews(h)
 	panel, members := seedInlinePanel(t, h)
 
 	h.Poller.postPanelComment(panel, members)
@@ -87,23 +78,25 @@ func TestCIPanelSkipsInlineReviewByDefault(t *testing.T) {
 	assert.Empty(t, *inline)
 }
 
-// A failed line-comment post is logged only: the PR comment already carries
-// every finding, so the panel still finalizes as posted.
-func TestCIPanelInlineReviewFailureKeepsOutcome(t *testing.T) {
+// Queueing line comments happens after finalization, so the panel's outcome
+// and status are already the PR comment's.
+func TestCIPanelInlineReviewQueuedAfterFinalize(t *testing.T) {
 	h := newCIPollerHarness(t, "https://github.com/acme/api.git")
 	h.Cfg.CI.InlineComments = true
 	h.CaptureComments()
 	statuses := h.CaptureCommitStatuses()
-	inline := captureInlineReviews(h, errors.New("422 Unprocessable Entity"))
+	var outcomeAtEnqueue *string
+	h.Poller.enqueueInlineReviewFn = func(inlineReviewJob) {
+		stored, err := h.DB.GetCIPanelByPRSHA("acme/api", 7, "head-a")
+		require.NoError(t, err)
+		outcomeAtEnqueue = stored.Outcome
+	}
 	panel, members := seedInlinePanel(t, h)
 
 	h.Poller.postPanelComment(panel, members)
 
-	require.Len(t, *inline, 1)
-	stored, err := h.DB.GetCIPanelByPRSHA("acme/api", 7, "head-a")
-	require.NoError(t, err)
-	require.NotNil(t, stored.Outcome)
-	assert.Equal(t, storage.PanelOutcomeReviewPosted, *stored.Outcome)
+	require.NotNil(t, outcomeAtEnqueue)
+	assert.Equal(t, storage.PanelOutcomeReviewPosted, *outcomeAtEnqueue)
 	require.NotEmpty(t, *statuses)
 	assert.Equal(t, "success", (*statuses)[len(*statuses)-1].State)
 }
@@ -114,7 +107,7 @@ func TestCIPanelNoInlineReviewWhenCommentFails(t *testing.T) {
 	h.Cfg.CI.InlineComments = true
 	h.Poller.postPRCommentFn = func(string, int, string) error { return errors.New("500 Internal Server Error") }
 	h.CaptureCommitStatuses()
-	inline := captureInlineReviews(h, nil)
+	inline := captureInlineReviews(h)
 	panel, members := seedInlinePanel(t, h)
 
 	h.Poller.postPanelComment(panel, members)

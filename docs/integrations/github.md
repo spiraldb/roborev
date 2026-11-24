@@ -918,9 +918,9 @@ this permission advice when silence is enabled.
 ## Line Comments
 
 Set `inline_comments = true` to also comment on the lines that findings name.
-After the daemon posts a synthesized PR comment, it posts one pull request
-review as a `COMMENT` event. The review holds a line comment for each finding
-that the comment shows and that names a line in the pull request's diff:
+After the daemon posts a synthesized PR comment, it posts pull request reviews
+as `COMMENT` events, with a line comment for each finding that the comment shows
+and that names a line in the pull request's diff:
 
 ```toml
 [ci]
@@ -934,18 +934,39 @@ inline_comments = true
     context lines around them. A finding about other code, or one without a
     line, appears in the PR comment only. A range that crosses diff hunks is
     shortened to its last line.
-- The review is pinned to the reviewed head commit. After a push, GitHub marks
-    the old line comments outdated, and the next review posts new ones. A
-    retried publication for the same head does not post a second review.
-- Posting line comments is best effort. If GitHub rejects the review, the daemon
-    logs the error; the PR comment, the commit status, and the panel's outcome
-    do not change.
-- roborev does not read its own line comments back as PR discussion.
-- The setting applies to synthesized GitHub daemon comments only. Raw fallback
-    comments, `roborev ci review`, and GitLab are unchanged. It needs **Pull
-    requests: Read and write**, which the setup above already grants.
+- Each review holds at most 5 line comments, and a head commit gets at most 25.
+    Findings beyond that stay in the PR comment only.
+- The reviews are pinned to the reviewed head commit. If the pull request's head
+    has moved on by the time they would post, the daemon skips them, because the
+    diff GitHub serves belongs to the new head. After a push, GitHub marks
+    earlier line comments outdated, and the next review posts new ones.
 
-A repository's `.roborev.toml` can override the global setting with its own
+### Pacing and failures
+
+GitHub limits how fast an integration may create content: 80 requests a minute
+and 500 an hour, counting the web interface. It does not say how the comments in
+one review count, so the daemon assumes each comment counts and stays well below
+the limit:
+
+- One queue per daemon posts the reviews one at a time, at least a second apart,
+    and at most 30 line comments a minute across all pull requests.
+- When GitHub answers with a rate limit, the queue waits as long as its
+    `Retry-After` header says, otherwise at least a minute, doubling on each
+    retry. After three attempts it gives up on that head commit.
+- Each review carries a hidden marker with the head commit and its batch number.
+    A retry skips batches GitHub already accepted, including a request that
+    timed out after GitHub stored it.
+- If GitHub cannot place a batch's comments, the daemon retries that batch once
+    with single-line comments and then skips it.
+- Line comments are best effort. The queue runs after the PR comment, the commit
+    status, and the panel's outcome are final, and nothing it does changes them.
+    A daemon restart drops line comments still in the queue.
+
+roborev does not read its own line comments back as PR discussion. The setting
+applies to synthesized GitHub daemon comments only. Raw fallback comments,
+`roborev ci review`, and GitLab are unchanged. It needs **Pull requests: Read
+and write**, which the setup above already grants. A repository's
+`.roborev.toml` can override the global setting with its own
 `[ci] inline_comments`.
 
 ## Comment Upsert

@@ -138,8 +138,10 @@ type CIPoller struct {
 	prPostTargetFn      func(context.Context, string, int) (panelPostTarget, error)
 	codeownersFn        func(ctx context.Context, ghRepo, ref string) (map[string]struct{}, error)
 
-	// postInlineReviewFn posts a review's line comments; tests replace it.
-	postInlineReviewFn func(ghRepo string, prNumber int, headSHA, summary string, findings []reviewpkg.InlineFinding) (int, error)
+	// inlineQueue posts line comments in the background, paced for GitHub's
+	// content-creation limits. enqueueInlineReviewFn replaces it in tests.
+	inlineQueue           *inlineReviewQueue
+	enqueueInlineReviewFn func(inlineReviewJob)
 
 	repoResolver *RepoResolver
 	errorLog     *ErrorLog
@@ -267,6 +269,7 @@ func NewCIPoller(db *storage.DB, cfgGetter ConfigGetter, broadcaster Broadcaster
 		)
 	}
 	p.postPRCommentFn = p.postPRComment
+	p.inlineQueue = p.newInlineQueue()
 
 	if cfg.CI.GitHubAppConfigured() {
 		pemData, err := cfg.CI.GitHubAppPrivateKeyResolved()
@@ -412,8 +415,19 @@ func (p *CIPoller) Stop() {
 	<-eventDoneCh
 
 	p.mu.Lock()
+	queue := p.inlineQueue
+	p.inlineQueue = p.newInlineQueue()
 	p.stopping = false
 	p.mu.Unlock()
+	if queue != nil {
+		queue.shutdown()
+	}
+}
+
+func (p *CIPoller) newInlineQueue() *inlineReviewQueue {
+	return newInlineReviewQueue(func(ghRepo string) (inlineReviewClient, error) {
+		return p.githubClientForRepo(ghRepo)
+	})
 }
 
 // HealthCheck returns whether the CI poller is healthy
@@ -2991,40 +3005,30 @@ func (p *CIPoller) postPanelComment(row *storage.CIPanel, members []storage.Batc
 	}
 }
 
-// publishInlineReview comments on the lines the posted findings name. It runs
-// after the PR comment is posted and the panel is finalized, and it is best
-// effort: the PR comment already carries every finding, so a failure here is
-// logged and never changes the panel's outcome or status.
+// publishInlineReview queues line comments for the findings the PR comment
+// showed. It runs after the PR comment is posted and the panel is finalized,
+// and it is best effort: the PR comment already carries every finding, so a
+// failure to post line comments never changes the panel's outcome or status.
 func (p *CIPoller) publishInlineReview(row *storage.CIPanel, findings []reviewpkg.InlineFinding) {
 	if len(findings) == 0 || !p.resolveInlineComments(context.Background(), row.GithubRepo) {
 		return
 	}
-	summary := fmt.Sprintf("Line comments for the roborev review of `%s`. The roborev PR comment has the full review.",
-		gitpkg.ShortSHA(row.HeadSHA))
-	post := p.postInlineReview
-	if p.postInlineReviewFn != nil {
-		post = p.postInlineReviewFn
+	job := inlineReviewJob{
+		repo:    row.GithubRepo,
+		pr:      row.PRNumber,
+		headSHA: row.HeadSHA,
+		summary: fmt.Sprintf("Line comments for the roborev review of `%s`. The roborev PR comment has the full review.",
+			gitpkg.ShortSHA(row.HeadSHA)),
+		findings: findings,
 	}
-	posted, err := post(row.GithubRepo, row.PRNumber, row.HeadSHA, summary, findings)
-	if err != nil {
-		log.Printf("CI poller: error posting line comments for %s#%d (panel %d): %v",
-			row.GithubRepo, row.PRNumber, row.ID, err)
+	if p.enqueueInlineReviewFn != nil {
+		p.enqueueInlineReviewFn(job)
 		return
 	}
-	if posted > 0 {
-		log.Printf("CI poller: posted %d line comments on %s#%d (panel %d)",
-			posted, row.GithubRepo, row.PRNumber, row.ID)
-	}
-}
-
-func (p *CIPoller) postInlineReview(ghRepo string, prNumber int, headSHA, summary string, findings []reviewpkg.InlineFinding) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	client, err := p.githubClientForRepo(ghRepo)
-	if err != nil {
-		return 0, err
-	}
-	return client.PostInlineReview(ctx, ghRepo, prNumber, headSHA, summary, findings)
+	p.mu.Lock()
+	queue := p.inlineQueue
+	p.mu.Unlock()
+	queue.enqueue(job)
 }
 
 // finalizePanelWithoutReview records a failed status without creating a PR
