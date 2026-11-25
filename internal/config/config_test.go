@@ -4591,6 +4591,30 @@ func TestResolveCIIncludeCosts(t *testing.T) {
 	})
 }
 
+func TestResolveCIInlineComments(t *testing.T) {
+	t.Run("default false", func(t *testing.T) {
+		assert.False(t, ResolveCIInlineComments(nil, &Config{}))
+	})
+
+	t.Run("global true", func(t *testing.T) {
+		cfg := &Config{CI: CIConfig{InlineComments: true}}
+		assert.True(t, ResolveCIInlineComments(nil, cfg))
+	})
+
+	t.Run("repo false overrides global true", func(t *testing.T) {
+		repoFalse := false
+		repoCfg := &RepoConfig{CI: RepoCIConfig{InlineComments: &repoFalse}}
+		globalCfg := &Config{CI: CIConfig{InlineComments: true}}
+		assert.False(t, ResolveCIInlineComments(repoCfg, globalCfg))
+	})
+
+	t.Run("repo true overrides global false", func(t *testing.T) {
+		repoTrue := true
+		repoCfg := &RepoConfig{CI: RepoCIConfig{InlineComments: &repoTrue}}
+		assert.True(t, ResolveCIInlineComments(repoCfg, &Config{}))
+	})
+}
+
 func TestIsThrottleBypassed(t *testing.T) {
 	ci := CIConfig{
 		ThrottleBypassUsers: []string{"wesm", "mariusvniekerk"},

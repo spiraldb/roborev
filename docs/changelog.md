@@ -7,6 +7,13 @@ All notable changes to roborev, grouped by minor release.
 
 ## Unreleased
 
+- The GitHub CI poller can comment on the lines that findings name. Set
+    `[ci] inline_comments = true` to also post pull request reviews with a line
+    comment for each shown finding inside the diff, next to the usual PR
+    comment. Reviews hold up to 5 comments, a head commit gets up to 25, and a
+    queue paces them below GitHub's content-creation limits. See
+    [Line Comments](/docs/integrations/github/#line-comments).
+
 ## 0.76.0
 
 <small>2026-11-22</small>

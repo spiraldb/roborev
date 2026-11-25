@@ -38,11 +38,14 @@ type PreparedComment struct {
 }
 
 type commentFinding struct {
-	severity string
-	problem  string
-	fix      string
-	location string
-	markdown string
+	severity  string
+	problem   string
+	fix       string
+	location  string
+	file      string
+	startLine int
+	endLine   int
+	markdown  string
 }
 
 // PrepareComment ingests structured or prose review data and applies the
@@ -75,6 +78,7 @@ func PrepareComment(cfg CommentConfig, r ReviewResult) PreparedComment {
 			comment.findings = append(comment.findings, commentFinding{
 				severity: finding.Severity, problem: finding.Problem,
 				fix: finding.Fix, location: finding.Location,
+				file: finding.File, startLine: finding.StartLine, endLine: finding.EndLine,
 			})
 		}
 	} else {
@@ -175,6 +179,39 @@ func FormatComment(comment PreparedComment) string {
 		return strings.TrimRight(out.String(), "\n") + notice
 	}
 	return out.String()
+}
+
+// InlineFinding is a finding shown in a comment that names lines in one file.
+// StartLine and EndLine are 1-based and inclusive, and EndLine is at least
+// StartLine.
+type InlineFinding struct {
+	Severity  string
+	Problem   string
+	Fix       string
+	File      string
+	StartLine int
+	EndLine   int
+}
+
+// InlineFindings returns the structured findings the comment shows, in display
+// order, that name a file and a line. The severity, confidence, and count
+// filters already applied, so these are a subset of what FormatComment shows.
+func (comment PreparedComment) InlineFindings() []InlineFinding {
+	if !comment.structured || comment.verbatim != nil {
+		return nil
+	}
+	var out []InlineFinding
+	for _, finding := range comment.findings {
+		if finding.file == "" || finding.startLine <= 0 {
+			continue
+		}
+		end := max(finding.endLine, finding.startLine)
+		out = append(out, InlineFinding{
+			Severity: finding.severity, Problem: finding.problem, Fix: finding.fix,
+			File: finding.file, StartLine: finding.startLine, EndLine: end,
+		})
+	}
+	return out
 }
 
 // OmissionNotice returns the cap explanation separately so publishers can

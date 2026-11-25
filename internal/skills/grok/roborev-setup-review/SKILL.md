@@ -166,6 +166,7 @@ This mapping is for you, not the user. Use only what the conversation needs.
 | Shorter synthesized GitHub daemon comments | `[ci] comment_max_findings` caps structured findings; `0` (default) is unlimited. Stored reviews stay complete. |
 | Hide low-confidence findings in synthesized GitHub daemon comments | `[ci] comment_min_confidence` accepts a finite `0`–`1` floor for the confidence recorded by synthesis. Unset globally disables filtering. Unset in a repo inherits the global floor, and repo `0` disables it. Findings with no stored score stay visible. Synthesis is instructed to use `0.5` when no source scored a finding, so a higher floor can hide it. |
 | Silence on clean synthesized GitHub daemon reviews | `[ci] comment_when_clean = false`; default `true` posts clean comments. With `false`, filtering can suppress a new comment even when the stored review has findings. |
+| Line comments on synthesized GitHub daemon reviews | `[ci] inline_comments = true`; default `false`. Also posts pull request reviews with a comment on each line a shown finding names inside the diff, in batches of 5 and at most 25 per head commit. Findings outside the diff stay in the PR comment only. |
 | Only serious findings fail | `review_min_severity`, plus severity guidance in each rubric |
 | Passing reviews close themselves | `auto_close_passing_reviews = true` |
 | Reviewers that see the task a commit is for, from Kata | `[kata_context]` with `mode = "current"`; commits name their issue, such as `Closes: kata#abc4` |

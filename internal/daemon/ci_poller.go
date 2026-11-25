@@ -138,6 +138,11 @@ type CIPoller struct {
 	prPostTargetFn      func(context.Context, string, int) (panelPostTarget, error)
 	codeownersFn        func(ctx context.Context, ghRepo, ref string) (map[string]struct{}, error)
 
+	// inlineQueue posts line comments in the background, paced for GitHub's
+	// content-creation limits. enqueueInlineReviewFn replaces it in tests.
+	inlineQueue           *inlineReviewQueue
+	enqueueInlineReviewFn func(inlineReviewJob)
+
 	repoResolver *RepoResolver
 	errorLog     *ErrorLog
 
@@ -264,6 +269,7 @@ func NewCIPoller(db *storage.DB, cfgGetter ConfigGetter, broadcaster Broadcaster
 		)
 	}
 	p.postPRCommentFn = p.postPRComment
+	p.inlineQueue = p.newInlineQueue()
 
 	if cfg.CI.GitHubAppConfigured() {
 		pemData, err := cfg.CI.GitHubAppPrivateKeyResolved()
@@ -409,8 +415,19 @@ func (p *CIPoller) Stop() {
 	<-eventDoneCh
 
 	p.mu.Lock()
+	queue := p.inlineQueue
+	p.inlineQueue = p.newInlineQueue()
 	p.stopping = false
 	p.mu.Unlock()
+	if queue != nil {
+		queue.shutdown()
+	}
+}
+
+func (p *CIPoller) newInlineQueue() *inlineReviewQueue {
+	return newInlineReviewQueue(func(ghRepo string) (inlineReviewClient, error) {
+		return p.githubClientForRepo(ghRepo)
+	})
 }
 
 // HealthCheck returns whether the CI poller is healthy
@@ -2983,6 +3000,35 @@ func (p *CIPoller) postPanelComment(row *storage.CIPanel, members []storage.Batc
 	p.finalizePanelStatus(row, outcome, state, desc)
 	log.Printf("CI poller: finalized panel comment on %s#%d (panel %d, %d members, %s)",
 		row.GithubRepo, row.PRNumber, row.ID, len(members), outcome)
+	if outcome == storage.PanelOutcomeReviewPosted {
+		p.publishInlineReview(row, publication.inline)
+	}
+}
+
+// publishInlineReview queues line comments for the findings the PR comment
+// showed. It runs after the PR comment is posted and the panel is finalized,
+// and it is best effort: the PR comment already carries every finding, so a
+// failure to post line comments never changes the panel's outcome or status.
+func (p *CIPoller) publishInlineReview(row *storage.CIPanel, findings []reviewpkg.InlineFinding) {
+	if len(findings) == 0 || !p.resolveInlineComments(context.Background(), row.GithubRepo) {
+		return
+	}
+	job := inlineReviewJob{
+		repo:    row.GithubRepo,
+		pr:      row.PRNumber,
+		headSHA: row.HeadSHA,
+		summary: fmt.Sprintf("Line comments for the roborev review of `%s`. The roborev PR comment has the full review.",
+			gitpkg.ShortSHA(row.HeadSHA)),
+		findings: findings,
+	}
+	if p.enqueueInlineReviewFn != nil {
+		p.enqueueInlineReviewFn(job)
+		return
+	}
+	p.mu.Lock()
+	queue := p.inlineQueue
+	p.mu.Unlock()
+	queue.enqueue(job)
 }
 
 // finalizePanelWithoutReview records a failed status without creating a PR
@@ -3056,6 +3102,8 @@ type panelCommentPublication struct {
 	body      string
 	clean     bool
 	whenClean bool
+	// inline holds the posted findings that name lines, for line comments.
+	inline []reviewpkg.InlineFinding
 }
 
 func (p *CIPoller) preparePanelComment(row *storage.CIPanel, members []storage.BatchReviewResult) (panelCommentPublication, error) {
@@ -3088,7 +3136,7 @@ func (p *CIPoller) preparePanelComment(row *storage.CIPanel, members []storage.B
 	body := formatPreparedPanelPRCommentWithHead(
 		prepared, rev, string(rev.Verdict()), members, p.resolveIncludeCosts(context.Background(), row.GithubRepo), row.HeadSHA,
 	)
-	return panelCommentPublication{body: body, clean: prepared.IsClean(), whenClean: whenClean}, nil
+	return panelCommentPublication{body: body, clean: prepared.IsClean(), whenClean: whenClean, inline: prepared.InlineFindings()}, nil
 }
 
 // handlePanelPostError resolves a failed comment post: a permanent GitHub access
@@ -4727,6 +4775,17 @@ func (p *CIPoller) resolveUpsertComments(ctx context.Context, ghRepo string) boo
 
 // resolveIncludeCosts determines whether CI PR comments should include token
 // cost estimates for the given repo. Per-repo config takes priority over global.
+func (p *CIPoller) resolveInlineComments(ctx context.Context, ghRepo string) bool {
+	var repoCfg *config.RepoConfig
+	repo, err := p.findLocalRepo(ctx, ghRepo)
+	if err == nil && repo != nil {
+		if loaded, loadErr := loadCIRepoConfig(repo.RootPath); loadErr == nil {
+			repoCfg = loaded.Config
+		}
+	}
+	return config.ResolveCIInlineComments(repoCfg, p.cfgGetter.Config())
+}
+
 func (p *CIPoller) resolveIncludeCosts(ctx context.Context, ghRepo string) bool {
 	var repoCfg *config.RepoConfig
 	repo, err := p.findLocalRepo(ctx, ghRepo)
