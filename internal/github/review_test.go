@@ -202,12 +202,14 @@ func TestPlanInlineReviewSkipsPostedBatchesOnly(t *testing.T) {
 		lines += "+x\n"
 		findings = append(findings, review.InlineFinding{Severity: "low", Problem: "p", File: "a.go", StartLine: line, EndLine: line})
 	}
-	api := &inlineReviewAPI{t: t, head: "abc123",
+	api := &inlineReviewAPI{
+		t: t, head: "abc123",
 		files: [][]*googlegithub.CommitFile{{{Filename: ptr("a.go"), Patch: ptr("@@ -0,0 +1,12 @@\n" + lines)}}},
 		reviews: []*googlegithub.PullRequestReview{
 			{Body: ptr(InlineMarker + "\n" + inlineBatchMarker("abc123", 1))},
 			{Body: ptr(InlineMarker + "\n" + inlineBatchMarker("old999", 0))},
-		}}
+		},
+	}
 	client := newInlineReviewServer(t, api)
 
 	batches, err := client.PlanInlineReview(t.Context(), "acme/widgets", 7, "abc123", findings)

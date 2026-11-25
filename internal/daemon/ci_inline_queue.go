@@ -56,23 +56,21 @@ type inlineReviewQueue struct {
 
 	mu        sync.Mutex
 	started   bool
+	stopped   bool
 	jobs      chan inlineReviewJob
-	ctx       context.Context
-	cancel    context.CancelFunc
+	stop      chan struct{}
 	done      chan struct{}
 	lastWrite time.Time
 }
 
 func newInlineReviewQueue(client func(ghRepo string) (inlineReviewClient, error)) *inlineReviewQueue {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &inlineReviewQueue{
 		client:  client,
 		limiter: rate.NewLimiter(rate.Every(time.Minute/inlineCommentsPerMinute), inlineCommentBurst),
 		sleep:   sleepContext,
 		now:     time.Now,
 		jobs:    make(chan inlineReviewJob, inlineQueueSize),
-		ctx:     ctx,
-		cancel:  cancel,
+		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 	}
 }
@@ -94,8 +92,11 @@ func (q *inlineReviewQueue) enqueue(job inlineReviewJob) {
 
 // shutdown cancels pending and in-flight work and waits for the worker.
 func (q *inlineReviewQueue) shutdown() {
-	q.cancel()
 	q.mu.Lock()
+	if !q.stopped {
+		q.stopped = true
+		close(q.stop)
+	}
 	started := q.started
 	// Marking it started keeps a later enqueue from starting a worker.
 	q.started = true
@@ -107,19 +108,28 @@ func (q *inlineReviewQueue) shutdown() {
 
 func (q *inlineReviewQueue) run() {
 	defer close(q.done)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-q.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	for {
 		select {
-		case <-q.ctx.Done():
+		case <-ctx.Done():
 			return
 		case job := <-q.jobs:
-			q.process(job)
+			q.process(ctx, job)
 		}
 	}
 }
 
 // process posts one job's batches, retrying rate limits and transient
 // failures up to inlineMaxAttempts times in total.
-func (q *inlineReviewQueue) process(job inlineReviewJob) {
+func (q *inlineReviewQueue) process(ctx context.Context, job inlineReviewJob) {
 	client, err := q.client(job.repo)
 	if err != nil {
 		log.Printf("CI poller: line comments for %s#%d: %v", job.repo, job.pr, err)
@@ -127,10 +137,10 @@ func (q *inlineReviewQueue) process(job inlineReviewJob) {
 	}
 	posted := 0
 	for attempt := 1; ; attempt++ {
-		batches, err := q.plan(client, job)
+		batches, err := q.plan(ctx, client, job)
 		if err == nil {
 			var n int
-			n, err = q.postBatches(client, job, batches)
+			n, err = q.postBatches(ctx, client, job, batches)
 			posted += n
 			if err == nil {
 				if posted > 0 {
@@ -143,7 +153,7 @@ func (q *inlineReviewQueue) process(job inlineReviewJob) {
 			log.Printf("CI poller: skipping line comments for %s#%d: %v", job.repo, job.pr, err)
 			return
 		}
-		if q.ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return
 		}
 		if attempt == inlineMaxAttempts {
@@ -154,14 +164,14 @@ func (q *inlineReviewQueue) process(job inlineReviewJob) {
 		delay := retryDelay(err, attempt)
 		log.Printf("CI poller: line comments for %s#%d failed (attempt %d), retrying in %s: %v",
 			job.repo, job.pr, attempt, delay, err)
-		if q.sleep(q.ctx, delay) != nil {
+		if q.sleep(ctx, delay) != nil {
 			return
 		}
 	}
 }
 
-func (q *inlineReviewQueue) plan(client inlineReviewClient, job inlineReviewJob) ([]ghpkg.InlineBatch, error) {
-	ctx, cancel := context.WithTimeout(q.ctx, inlineRequestTimeout)
+func (q *inlineReviewQueue) plan(ctx context.Context, client inlineReviewClient, job inlineReviewJob) ([]ghpkg.InlineBatch, error) {
+	ctx, cancel := context.WithTimeout(ctx, inlineRequestTimeout)
 	defer cancel()
 	return client.PlanInlineReview(ctx, job.repo, job.pr, job.headSHA, job.findings)
 }
@@ -170,12 +180,12 @@ func (q *inlineReviewQueue) plan(client inlineReviewClient, job inlineReviewJob)
 // accepted. A batch GitHub rejects as invalid is retried once with single-line
 // comments and then skipped; any other error stops so the caller can retry,
 // and the next plan leaves out the batches already posted.
-func (q *inlineReviewQueue) postBatches(client inlineReviewClient, job inlineReviewJob, batches []ghpkg.InlineBatch) (int, error) {
+func (q *inlineReviewQueue) postBatches(ctx context.Context, client inlineReviewClient, job inlineReviewJob, batches []ghpkg.InlineBatch) (int, error) {
 	posted := 0
 	for _, batch := range batches {
-		err := q.post(client, job, batch)
+		err := q.post(ctx, client, job, batch)
 		if ghpkg.IsInlineValidationError(err) {
-			err = q.post(client, job, batch.SingleLine())
+			err = q.post(ctx, client, job, batch.SingleLine())
 			if ghpkg.IsInlineValidationError(err) {
 				log.Printf("CI poller: GitHub rejected line comment batch %d for %s#%d: %v",
 					batch.Index, job.repo, job.pr, err)
@@ -192,18 +202,18 @@ func (q *inlineReviewQueue) postBatches(client inlineReviewClient, job inlineRev
 
 // post sends one batch after waiting for the comment budget and the minimum
 // gap since the previous write.
-func (q *inlineReviewQueue) post(client inlineReviewClient, job inlineReviewJob, batch ghpkg.InlineBatch) error {
-	if err := q.limiter.WaitN(q.ctx, len(batch.Comments)); err != nil {
+func (q *inlineReviewQueue) post(ctx context.Context, client inlineReviewClient, job inlineReviewJob, batch ghpkg.InlineBatch) error {
+	if err := q.limiter.WaitN(ctx, len(batch.Comments)); err != nil {
 		return err
 	}
 	if gap := inlineMinWriteGap - q.now().Sub(q.lastWrite); gap > 0 {
-		if err := q.sleep(q.ctx, gap); err != nil {
+		if err := q.sleep(ctx, gap); err != nil {
 			return err
 		}
 	}
-	ctx, cancel := context.WithTimeout(q.ctx, inlineRequestTimeout)
+	reqCtx, cancel := context.WithTimeout(ctx, inlineRequestTimeout)
 	defer cancel()
-	err := client.PostInlineBatch(ctx, job.repo, job.pr, job.headSHA, job.summary, batch)
+	err := client.PostInlineBatch(reqCtx, job.repo, job.pr, job.headSHA, job.summary, batch)
 	q.lastWrite = q.now()
 	return err
 }

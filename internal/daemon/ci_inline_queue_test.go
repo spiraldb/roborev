@@ -96,7 +96,7 @@ func TestInlineQueuePacesBatches(t *testing.T) {
 	client := &fakeInlineClient{batches: testBatches(3)}
 	q, sleeps := newTestInlineQueue(client)
 
-	q.process(inlineJob)
+	q.process(t.Context(), inlineJob)
 
 	assert.Len(t, client.posts, 3)
 	// The first write has no earlier write to wait for.
@@ -110,7 +110,7 @@ func TestInlineQueueRateLimitWaitsAndResumes(t *testing.T) {
 	client := &fakeInlineClient{batches: testBatches(3), postErrs: []error{nil, &googlegithub.AbuseRateLimitError{RetryAfter: &retry}}}
 	q, sleeps := newTestInlineQueue(client)
 
-	q.process(inlineJob)
+	q.process(t.Context(), inlineJob)
 
 	var indexes []int
 	for _, batch := range client.posts {
@@ -127,7 +127,7 @@ func TestInlineQueueGivesUpAfterMaxAttempts(t *testing.T) {
 	client := &fakeInlineClient{batches: testBatches(1), postErrs: []error{failure, failure, failure, failure}}
 	q, sleeps := newTestInlineQueue(client)
 
-	q.process(inlineJob)
+	q.process(t.Context(), inlineJob)
 
 	assert.Len(t, client.posts, inlineMaxAttempts)
 	var backoffs []time.Duration
@@ -145,7 +145,7 @@ func TestInlineQueueValidationFallback(t *testing.T) {
 	client := &fakeInlineClient{batches: testBatches(2), postErrs: []error{validationError(), validationError()}}
 	q, _ := newTestInlineQueue(client)
 
-	q.process(inlineJob)
+	q.process(t.Context(), inlineJob)
 
 	require.Len(t, client.posts, 3)
 	assert.Equal(t, 1, client.posts[0].Comments[0].StartLine)
@@ -158,7 +158,7 @@ func TestInlineQueueHeadMovedStops(t *testing.T) {
 	client := &fakeInlineClient{planErr: ghpkg.ErrInlineHeadMoved}
 	q, sleeps := newTestInlineQueue(client)
 
-	q.process(inlineJob)
+	q.process(t.Context(), inlineJob)
 
 	assert.Equal(t, 1, client.plans)
 	assert.Empty(t, client.posts)
